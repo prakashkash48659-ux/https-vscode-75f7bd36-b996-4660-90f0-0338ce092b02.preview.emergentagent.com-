@@ -14,7 +14,9 @@ from emergentintegrations.payments.stripe.checkout import (
     StripeCheckout,
     CheckoutSessionRequest,
 )
-from emergentintegrations.llm.openai import OpenAITextToSpeech
+from emergentintegrations.llm.openai import OpenAITextToSpeech, OpenAISpeechToText
+import base64
+import io
 
 
 ROOT_DIR = Path(__file__).parent
@@ -46,6 +48,8 @@ class ScoreCreate(BaseModel):
     vehicle: Optional[str] = None
     is_daily: bool = False
     daily_date: Optional[str] = None
+    voice_b64: Optional[str] = None
+    voice_text: Optional[str] = None
 
 
 class Score(BaseModel):
@@ -56,6 +60,8 @@ class Score(BaseModel):
     vehicle: Optional[str] = None
     is_daily: bool = False
     daily_date: Optional[str] = None
+    has_voice: bool = False
+    voice_text: Optional[str] = None
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -111,6 +117,11 @@ class TTSRequest(BaseModel):
     voice: str = "nova"
 
 
+class WhisperRequest(BaseModel):
+    audio_b64: str
+    mime: str = "audio/webm"
+
+
 # ---------- TTS cache (in-memory) ----------
 _tts_cache: Dict[str, str] = {}
 
@@ -124,16 +135,35 @@ async def root():
 # ---- Scores ----
 @api_router.post("/scores", response_model=Score)
 async def submit_score(payload: ScoreCreate):
-    score = Score(**payload.model_dump())
-    await db.scores.insert_one(score.model_dump())
+    data = payload.model_dump()
+    voice_b64 = (data.pop("voice_b64", None) or "")
+    has_voice = bool(voice_b64)
+    score = Score(**data, has_voice=has_voice)
+    doc = score.model_dump()
+    if has_voice:
+        # cap voice size to ~250KB raw (~333KB b64)
+        if len(voice_b64) <= 350_000:
+            doc["voice_b64"] = voice_b64
+        else:
+            doc["has_voice"] = False
+            score.has_voice = False
+    await db.scores.insert_one(doc)
     return score
 
 
 @api_router.get("/scores/leaderboard", response_model=List[Score])
 async def get_leaderboard(limit: int = 10):
-    cursor = db.scores.find({"is_daily": False}, {"_id": 0}).sort("score", -1).limit(limit)
+    cursor = db.scores.find({"is_daily": False}, {"_id": 0, "voice_b64": 0}).sort("score", -1).limit(limit)
     items = await cursor.to_list(length=limit)
     return [Score(**i) for i in items]
+
+
+@api_router.get("/scores/{score_id}/voice")
+async def get_score_voice(score_id: str):
+    doc = await db.scores.find_one({"id": score_id}, {"_id": 0, "voice_b64": 1})
+    if not doc or not doc.get("voice_b64"):
+        raise HTTPException(status_code=404, detail="No voice")
+    return {"audio_base64": doc["voice_b64"]}
 
 
 # ---- Daily challenge ----
@@ -149,15 +179,21 @@ async def daily_seed():
 async def submit_daily_score(payload: ScoreCreate):
     payload.is_daily = True
     payload.daily_date = payload.daily_date or date.today().isoformat()
-    s = Score(**payload.model_dump())
-    await db.scores.insert_one(s.model_dump())
+    data = payload.model_dump()
+    voice_b64 = (data.pop("voice_b64", None) or "")
+    has_voice = bool(voice_b64)
+    s = Score(**data, has_voice=has_voice)
+    doc = s.model_dump()
+    if has_voice and len(voice_b64) <= 350_000:
+        doc["voice_b64"] = voice_b64
+    await db.scores.insert_one(doc)
     return s
 
 
 @api_router.get("/daily/leaderboard", response_model=List[Score])
 async def get_daily_leaderboard(limit: int = 10, daily_date: Optional[str] = None):
     d = daily_date or date.today().isoformat()
-    cursor = db.scores.find({"is_daily": True, "daily_date": d}, {"_id": 0}).sort("score", -1).limit(limit)
+    cursor = db.scores.find({"is_daily": True, "daily_date": d}, {"_id": 0, "voice_b64": 0}).sort("score", -1).limit(limit)
     items = await cursor.to_list(length=limit)
     return [Score(**i) for i in items]
 
@@ -374,6 +410,32 @@ async def tts(payload: TTSRequest):
         _tts_cache.clear()
     _tts_cache[cache_key] = b64
     return {"audio_base64": b64, "cached": False}
+
+
+@api_router.post("/whisper")
+async def whisper(payload: WhisperRequest):
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=500, detail="LLM key missing")
+    try:
+        raw = base64.b64decode(payload.audio_b64)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Bad base64: {e}")
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="audio too large")
+    # determine extension from mime
+    ext = "webm"
+    if "mp3" in payload.mime: ext = "mp3"
+    elif "m4a" in payload.mime or "mp4" in payload.mime: ext = "m4a"
+    elif "wav" in payload.mime: ext = "wav"
+    bio = io.BytesIO(raw)
+    bio.name = f"audio.{ext}"
+    try:
+        stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+        resp = await stt.transcribe(file=bio, model="whisper-1", response_format="json")
+        text = resp.text if hasattr(resp, "text") else str(resp)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"whisper failed: {e}")
+    return {"text": text}
 
 
 app.include_router(api_router)

@@ -261,6 +261,8 @@ export default function App() {
   const [selectedVehicle, setSelectedVehicle] = useState<VehicleType>('car');
   const [dailyMode, setDailyMode] = useState<boolean>(false);
 
+  const [lastVehicle, setLastVehicle] = useState<string>('car');
+
   const refreshProgress = useCallback(() => {
     const pid = getPlayerId();
     return fetch(`${BACKEND}/api/progress/${pid}`)
@@ -321,23 +323,12 @@ export default function App() {
   const handleGameOver = useCallback(async (score: number, missions: number, coinsEarned: number, vehicle: string) => {
     setLastScore(score);
     setLastMissions(missions);
+    setLastVehicle(vehicle);
     const newBest = Math.max(bestScore, score);
     setBestScore(newBest);
     setCoins(c => c + coinsEarned);
+    // Save progress (best/coins) immediately; score row submitted from GameOver after optional taunt
     try {
-      const todayIso = new Date().toISOString().slice(0, 10);
-      await fetch(`${BACKEND}/api/${dailyMode ? 'daily/scores' : 'scores'}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          player_name: playerName || 'Anon',
-          score,
-          missions_completed: missions,
-          vehicle,
-          is_daily: dailyMode,
-          daily_date: dailyMode ? todayIso : undefined,
-        }),
-      });
       await fetch(`${BACKEND}/api/progress`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -352,7 +343,27 @@ export default function App() {
       });
     } catch (_e) {}
     setScreen('gameover');
-  }, [playerName, bestScore, dailyMode]);
+  }, [playerName, bestScore]);
+
+  const submitScoreWithVoice = useCallback(async (voiceB64: string | null, voiceText: string | null) => {
+    try {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      await fetch(`${BACKEND}/api/${dailyMode ? 'daily/scores' : 'scores'}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          player_name: playerName || 'Anon',
+          score: lastScore,
+          missions_completed: lastMissions,
+          vehicle: lastVehicle,
+          is_daily: dailyMode,
+          daily_date: dailyMode ? todayIso : undefined,
+          voice_b64: voiceB64 || undefined,
+          voice_text: voiceText || undefined,
+        }),
+      });
+    } catch (_e) {}
+  }, [dailyMode, playerName, lastScore, lastMissions, lastVehicle]);
 
   const onPurchaseVehicle = useCallback(async (type: VehicleType) => {
     const cost = VEHICLE_PRICES[type] || 999;
@@ -429,6 +440,7 @@ export default function App() {
         bestScore={bestScore}
         coins={coins}
         dailyMode={dailyMode}
+        onSubmit={submitScoreWithVoice}
         onRetry={() => setScreen('play')}
         onHome={() => setScreen('home')}
         onLeaderboard={() => setScreen('leaderboard')}
@@ -534,12 +546,90 @@ function NameScreen({ value, onChange, onSubmit, onBack }: any) {
 }
 
 // ---------- Game Over Screen ----------
-function GameOverScreen({ score, missions, bestScore, coins, dailyMode, onRetry, onHome, onLeaderboard }: any) {
+function GameOverScreen({ score, missions, bestScore, coins, dailyMode, onSubmit, onRetry, onHome, onLeaderboard }: any) {
+  const [recState, setRecState] = useState<'idle' | 'recording' | 'recorded' | 'transcribing'>('idle');
+  const [voiceB64, setVoiceB64] = useState<string | null>(null);
+  const [voiceText, setVoiceText] = useState<string | null>(null);
+  const [voiceMime, setVoiceMime] = useState<string>('audio/webm');
+  const [submitted, setSubmitted] = useState<boolean>(false);
+  const [error, setError] = useState<string>('');
+  const recorderRef = useRef<any>(null);
+  const chunksRef = useRef<any[]>([]);
+
+  const startRec = async () => {
+    setError('');
+    try {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices) {
+        setError('Voice not supported on this device');
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const W: any = (typeof window !== 'undefined') ? window : {};
+      const MR = W.MediaRecorder;
+      if (!MR) { setError('Recording not supported'); return; }
+      let mime = 'audio/webm;codecs=opus';
+      if (!MR.isTypeSupported(mime)) mime = 'audio/webm';
+      if (!MR.isTypeSupported(mime)) mime = '';
+      const rec = new MR(stream, mime ? { mimeType: mime } : undefined);
+      chunksRef.current = [];
+      rec.ondataavailable = (e: any) => { if (e.data && e.data.size) chunksRef.current.push(e.data); };
+      rec.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: mime || 'audio/webm' });
+        setVoiceMime(blob.type || 'audio/webm');
+        const buf = await blob.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        const b64 = (typeof btoa !== 'undefined') ? btoa(bin) : '';
+        setVoiceB64(b64);
+        setRecState('transcribing');
+        try {
+          const r = await fetch(`${BACKEND}/api/whisper`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audio_b64: b64, mime: blob.type || 'audio/webm' }),
+          });
+          if (r.ok) {
+            const d = await r.json();
+            setVoiceText(d.text || '');
+          }
+        } catch (_e) {}
+        setRecState('recorded');
+        try { stream.getTracks().forEach((t: any) => t.stop()); } catch (_e) {}
+      };
+      recorderRef.current = rec;
+      rec.start();
+      setRecState('recording');
+      // auto stop after 6s
+      setTimeout(() => { try { rec.state === 'recording' && rec.stop(); } catch (_e) {} }, 6000);
+    } catch (e: any) {
+      setError(e?.message || 'Mic permission denied');
+    }
+  };
+
+  const stopRec = () => {
+    try { recorderRef.current && recorderRef.current.state === 'recording' && recorderRef.current.stop(); } catch (_e) {}
+  };
+
+  const playPreview = () => {
+    if (!voiceB64) return;
+    if (typeof window !== 'undefined' && (window as any).Audio) {
+      const a = new (window as any).Audio(`data:${voiceMime};base64,${voiceB64}`);
+      a.play().catch(() => {});
+    }
+  };
+
+  const submit = async (withVoice: boolean) => {
+    setSubmitted(true);
+    SFX.uiTap();
+    await onSubmit(withVoice ? voiceB64 : null, withVoice ? voiceText : null);
+  };
+
   return (
     <SafeAreaView style={[styles.fullScreen, { backgroundColor: C.grass }]} testID="gameover-screen">
-      <View style={styles.gameOverWrap}>
+      <ScrollView contentContainerStyle={{ padding: 24, alignItems: 'center', paddingBottom: 80 }}>
         <Text style={styles.gameOverTitle}>{dailyMode ? 'Daily Run!' : 'Run Complete!'}</Text>
-        <View style={styles.gameOverCard}>
+        <View style={[styles.gameOverCard, { width: '100%' }]}>
           <View style={styles.gameOverRow}>
             <FontAwesome5 name="star" size={20} color={C.primaryDark} />
             <Text style={styles.gameOverLabel}>Score</Text>
@@ -561,6 +651,57 @@ function GameOverScreen({ score, missions, bestScore, coins, dailyMode, onRetry,
             <Text style={styles.gameOverValue}>{bestScore}</Text>
           </View>
         </View>
+
+        {/* Voice taunt section */}
+        {!submitted && (
+          <View style={styles.tauntCard} testID="taunt-card">
+            <Text style={styles.tauntTitle}>🎤 Add a voice taunt</Text>
+            <Text style={styles.tauntSub}>Other players hear it on the leaderboard.</Text>
+            {error ? <Text style={{ color: C.danger, marginVertical: 4 }} testID="taunt-error">{error}</Text> : null}
+            {recState === 'idle' && (
+              <TouchableOpacity testID="taunt-record" style={[styles.gameBtnPrimary, { backgroundColor: C.danger, borderColor: C.dangerDark }]} onPress={startRec}>
+                <FontAwesome5 name="microphone" size={16} color="#fff" />
+                <Text style={[styles.gameBtnPrimaryText, { color: '#fff' }]}>  RECORD (6s)</Text>
+              </TouchableOpacity>
+            )}
+            {recState === 'recording' && (
+              <TouchableOpacity testID="taunt-stop" style={[styles.gameBtnPrimary, { backgroundColor: '#9CA3AF' }]} onPress={stopRec}>
+                <FontAwesome5 name="stop" size={16} color={C.textPrimary} />
+                <Text style={styles.gameBtnPrimaryText}>  STOP</Text>
+              </TouchableOpacity>
+            )}
+            {recState === 'transcribing' && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <ActivityIndicator size="small" color={C.secondary} />
+                <Text style={{ fontWeight: '700', color: C.textPrimary }}>Transcribing…</Text>
+              </View>
+            )}
+            {recState === 'recorded' && (
+              <View style={{ alignItems: 'center', alignSelf: 'stretch' }}>
+                {voiceText ? <Text style={styles.tauntText} testID="taunt-text">"{voiceText}"</Text> : null}
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                  <TouchableOpacity testID="taunt-play" style={[styles.gameBtnSecondary, { backgroundColor: C.secondary, minWidth: 0, flex: 1 }]} onPress={playPreview}>
+                    <FontAwesome5 name="play" size={12} color="#fff" />
+                    <Text style={styles.gameBtnSecondaryText}>  PREVIEW</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity testID="taunt-redo" style={[styles.gameBtnSecondary, { backgroundColor: '#9CA3AF', borderColor: '#6B7280', minWidth: 0, flex: 1 }]} onPress={() => { setVoiceB64(null); setVoiceText(null); setRecState('idle'); }}>
+                    <FontAwesome5 name="redo" size={12} color="#fff" />
+                    <Text style={styles.gameBtnSecondaryText}>  REDO</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+
+        {!submitted ? (
+          <TouchableOpacity testID="gameover-submit" style={[styles.gameBtnPrimary, { backgroundColor: C.accent, borderColor: '#048D6B' }]} onPress={() => submit(!!voiceB64)}>
+            <Text style={[styles.gameBtnPrimaryText, { color: '#fff' }]}>SUBMIT SCORE{voiceB64 ? ' + TAUNT' : ''}</Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={{ marginVertical: 12, fontSize: 16, color: C.accent, fontWeight: '900' }} testID="submitted-msg">✓ Submitted</Text>
+        )}
+
         <TouchableOpacity testID="gameover-retry" style={styles.gameBtnPrimary} onPress={onRetry}>
           <Text style={styles.gameBtnPrimaryText}>PLAY AGAIN</Text>
         </TouchableOpacity>
@@ -570,7 +711,7 @@ function GameOverScreen({ score, missions, bestScore, coins, dailyMode, onRetry,
         <TouchableOpacity testID="gameover-home" style={[styles.gameBtnSecondary, { backgroundColor: C.danger, borderColor: C.dangerDark }]} onPress={onHome}>
           <Text style={styles.gameBtnSecondaryText}>HOME</Text>
         </TouchableOpacity>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -764,7 +905,25 @@ function LeaderboardScreen({ onBack }: any) {
             items.map((it, idx) => (
               <View key={it.id || idx} style={styles.lbRow} testID={`lb-row-${idx}`}>
                 <Text style={styles.lbRank}>#{idx + 1}</Text>
-                <Text style={styles.lbName} numberOfLines={1}>{it.player_name}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.lbName} numberOfLines={1}>{it.player_name}</Text>
+                  {it.voice_text ? <Text style={{ fontSize: 11, color: C.secondary, fontStyle: 'italic' }} numberOfLines={1}>"{it.voice_text}"</Text> : null}
+                </View>
+                {it.has_voice ? (
+                  <TouchableOpacity testID={`lb-play-${idx}`} style={{ marginRight: 10, width: 32, height: 32, borderRadius: 16, backgroundColor: C.danger, alignItems: 'center', justifyContent: 'center' }} onPress={async () => {
+                    try {
+                      const r = await fetch(`${BACKEND}/api/scores/${it.id}/voice`);
+                      if (!r.ok) return;
+                      const d = await r.json();
+                      if (d.audio_base64 && typeof window !== 'undefined' && (window as any).Audio) {
+                        const a = new (window as any).Audio(`data:audio/webm;base64,${d.audio_base64}`);
+                        a.play().catch(() => {});
+                      }
+                    } catch (_e) {}
+                  }}>
+                    <FontAwesome5 name="volume-up" size={14} color="#fff" />
+                  </TouchableOpacity>
+                ) : null}
                 <Text style={styles.lbScore}>{it.score}</Text>
               </View>
             ))
@@ -1644,4 +1803,9 @@ const styles = StyleSheet.create({
   dialogHeader: { flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch', marginBottom: 12, gap: 10 },
   dialogName: { flex: 1, fontSize: 18, fontWeight: '900', color: C.textPrimary },
   dialogText: { fontSize: 16, color: C.textPrimary, fontStyle: 'italic', textAlign: 'center', marginBottom: 16, lineHeight: 22 },
+
+  tauntCard: { backgroundColor: '#FFF8E7', borderRadius: 16, padding: 14, borderWidth: 3, borderColor: C.textPrimary, width: '100%', alignItems: 'center', marginVertical: 8 },
+  tauntTitle: { fontSize: 16, fontWeight: '900', color: C.textPrimary, marginBottom: 2 },
+  tauntSub: { fontSize: 12, color: C.textPrimary, opacity: 0.7, marginBottom: 8 },
+  tauntText: { fontSize: 14, fontStyle: 'italic', color: C.textPrimary, textAlign: 'center', marginVertical: 6 },
 });
