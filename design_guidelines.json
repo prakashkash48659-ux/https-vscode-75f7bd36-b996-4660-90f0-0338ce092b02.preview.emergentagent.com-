@@ -1,0 +1,186 @@
+{
+  "theme": "Light",
+  "archetype": "6 (Vibrant Play)",
+  "domain": "Mobile Game",
+  "color_palette": {
+    "primary": "#FFD166",
+    "primary_dark": "#F4B333",
+    "secondary": "#118AB2",
+    "secondary_dark": "#0B6A8C",
+    "accent": "#06D6A0",
+    "danger": "#EF476F",
+    "background_grass": "#80ED99",
+    "background_sky": "#78C6A3",
+    "surface": "#FFFFFF",
+    "surface_overlay": "rgba(255, 255, 255, 0.8)",
+    "text_primary": "#073B4C",
+    "text_secondary": "#5C7B89",
+    "text_inverse": "#FFFFFF",
+    "map_road": "#A1A1AA",
+    "map_road_line": "#FFFFFF",
+    "map_building_warm": "#E76F51",
+    "map_building_orange": "#F4A261",
+    "joystick_base": "rgba(0, 0, 0, 0.2)",
+    "joystick_thumb": "#FFFFFF"
+  },
+  "typography": {
+    "primary_font": "Nunito",
+    "heading_font": "Fredoka",
+    "fallback_font": "sans-serif-rounded",
+    "sizes": {
+      "h1": 40,
+      "h2": 32,
+      "h3": 24,
+      "body": 16,
+      "small": 14,
+      "tiny": 12
+    },
+    "weights": {
+      "bold": "800",
+      "semibold": "600",
+      "regular": "400"
+    },
+    "letter_spacing": {
+      "headings": -0.5,
+      "labels": 1
+    }
+  },
+  "spacing_system": {
+    "xs": 4,
+    "sm": 8,
+    "md": 16,
+    "lg": 24,
+    "xl": 32,
+    "xxl": 48
+  },
+  "layout_and_grids": {
+    "container_padding": 16,
+    "hud_padding": {
+      "top": 48,
+      "horizontal": 16
+    },
+    "joystick_position": {
+      "bottom": 48,
+      "left": 32
+    },
+    "action_buttons_position": {
+      "bottom": 48,
+      "right": 32
+    },
+    "mission_banner": {
+      "top": 100,
+      "alignSelf": "center"
+    }
+  },
+  "component_styles": {
+    "game_button_primary": {
+      "backgroundColor": "#FFD166",
+      "borderRadius": 24,
+      "paddingVertical": 16,
+      "paddingHorizontal": 32,
+      "borderBottomWidth": 6,
+      "borderColor": "#F4B333",
+      "shadowColor": "#000",
+      "shadowOffset": { "width": 0, "height": 4 },
+      "shadowOpacity": 0.15,
+      "shadowRadius": 8,
+      "alignItems": "center",
+      "justifyContent": "center"
+    },
+    "game_button_danger": {
+      "backgroundColor": "#EF476F",
+      "borderColor": "#C92A51"
+    },
+    "game_button_secondary": {
+      "backgroundColor": "#118AB2",
+      "borderColor": "#0B6A8C"
+    },
+    "hud_pill": {
+      "backgroundColor": "rgba(255, 255, 255, 0.8)",
+      "borderRadius": 20,
+      "paddingVertical": 8,
+      "paddingHorizontal": 16,
+      "flexDirection": "row",
+      "alignItems": "center",
+      "shadowColor": "#000",
+      "shadowOpacity": 0.1,
+      "shadowOffset": { "width": 0, "height": 2 },
+      "shadowRadius": 4
+    },
+    "joystick_base": {
+      "width": 120,
+      "height": 120,
+      "borderRadius": 60,
+      "backgroundColor": "rgba(0,0,0,0.2)",
+      "justifyContent": "center",
+      "alignItems": "center"
+    },
+    "joystick_thumb": {
+      "width": 50,
+      "height": 50,
+      "borderRadius": 25,
+      "backgroundColor": "#FFFFFF",
+      "shadowColor": "#000",
+      "shadowOpacity": 0.3,
+      "shadowOffset": { "width": 0, "height": 4 },
+      "shadowRadius": 6
+    },
+    "action_button": {
+      "width": 64,
+      "height": 64,
+      "borderRadius": 32,
+      "backgroundColor": "#118AB2",
+      "borderBottomWidth": 4,
+      "borderColor": "#0B6A8C",
+      "justifyContent": "center",
+      "alignItems": "center",
+      "margin": 8
+    },
+    "mission_card": {
+      "backgroundColor": "#FFFFFF",
+      "borderRadius": 16,
+      "padding": 16,
+      "borderWidth": 2,
+      "borderColor": "#073B4C",
+      "shadowColor": "#000",
+      "shadowOffset": { "width": 4, "height": 4 },
+      "shadowOpacity": 1,
+      "shadowRadius": 0
+    }
+  },
+  "iconography": {
+    "library": "@expo/vector-icons",
+    "recommended_sets": ["MaterialCommunityIcons", "FontAwesome5"],
+    "usage": {
+      "speed": "speedometer (MaterialCommunityIcons)",
+      "health": "heart (FontAwesome5)",
+      "score": "star (FontAwesome5)",
+      "horn": "bullhorn (MaterialCommunityIcons)",
+      "boost": "lightning-bolt (MaterialCommunityIcons)",
+      "enter_exit": "car-door (MaterialCommunityIcons)"
+    }
+  },
+  "testing": {
+    "attribute": "data-testid",
+    "instructions": "All interactive and key informational elements MUST include a data-testid attribute to facilitate robust automated testing. Example: <TouchableOpacity data-testid=\"play-button\">...</TouchableOpacity> or <Text data-testid=\"score-display\">...</Text>"
+  },
+  "media_urls": {
+    "splash_background": {
+      "url": "https://images.unsplash.com/photo-1745174837773-3e69d0f972c6?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzV8MHwxfHNlYXJjaHwyfHxjYXJ0b29uJTIwdmlsbGFnZSUyMGxhbmRzY2FwZSUyMHZlY3RvcnxlbnwwfHx8fDE3Nzc2NjUyMjd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Stylized village scene with buildings and trees, cartoonish vibe for splash screen."
+    },
+    "game_over_background": {
+      "url": "https://images.unsplash.com/photo-1727534089819-4b4a72bb11b0?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzV8MHwxfHNlYXJjaHwzfHxjYXJ0b29uJTIwdmlsbGFnZSUyMGxhbmRzY2FwZSUyMHZlY3RvcnxlbnwwfHx8fDE3Nzc2NjUyMjd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Sunset painting, warm colors suitable for game over or level complete screens."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the color palette to maintain the 'Vibrant Play' archetype.",
+    "Do NOT use emojis for UI icons, strictly use @expo/vector-icons.",
+    "Apply 'data-testid' to all buttons and key metrics (score, health) for testing purposes.",
+    "Use standard .js files as instructed.",
+    "Implement chunky buttons with borderBottomWidth to simulate a 3D press effect. On press, translate the button down and reduce borderBottomWidth.",
+    "For the open world map, use simple canvas or SVG shapes initially: grey lines for roads, green rects for grass, warm-colored rects for buildings. NPCs and vehicles can be colored rects/circles or simple SVGs.",
+    "Ensure the HUD is clearly visible over the map using the hud_pill styles (white with 80% opacity and shadow)."
+  ]
+}
