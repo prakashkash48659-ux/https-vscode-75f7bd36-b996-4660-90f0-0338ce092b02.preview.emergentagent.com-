@@ -14,6 +14,7 @@ from emergentintegrations.payments.stripe.checkout import (
     StripeCheckout,
     CheckoutSessionRequest,
 )
+from emergentintegrations.llm.openai import OpenAITextToSpeech
 
 
 ROOT_DIR = Path(__file__).parent
@@ -24,6 +25,7 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_emergent')
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 
 # Fixed coin packages (server-side only)
 COIN_PACKS: Dict[str, Dict[str, Any]] = {
@@ -102,6 +104,15 @@ class CheckoutRequest(BaseModel):
     package_id: str
     origin_url: str
     player_id: str
+
+
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "nova"
+
+
+# ---------- TTS cache (in-memory) ----------
+_tts_cache: Dict[str, str] = {}
 
 
 # ---------- Routes ----------
@@ -340,6 +351,29 @@ async def stripe_webhook(request: Request):
                 {"$set": {"payment_status": "paid", "status": "complete", "granted": True}},
             )
     return {"received": True}
+
+
+# ---- TTS ----
+@api_router.post("/tts")
+async def tts(payload: TTSRequest):
+    text = (payload.text or "").strip()[:300]
+    voice = payload.voice or "nova"
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    cache_key = f"{voice}::{text}"
+    if cache_key in _tts_cache:
+        return {"audio_base64": _tts_cache[cache_key], "cached": True}
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=500, detail="LLM key missing")
+    try:
+        engine = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
+        b64 = await engine.generate_speech_base64(text=text, model="tts-1", voice=voice)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"TTS failed: {e}")
+    if len(_tts_cache) > 200:
+        _tts_cache.clear()
+    _tts_cache[cache_key] = b64
+    return {"audio_base64": b64, "cached": False}
 
 
 app.include_router(api_router)

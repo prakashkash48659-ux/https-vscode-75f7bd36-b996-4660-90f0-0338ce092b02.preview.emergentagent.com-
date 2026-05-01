@@ -120,6 +120,10 @@ type Npc = {
   vy: number;
   type: 'villager' | 'farmer';
   color: string;
+  name: string;
+  voice: string;
+  dialogs: string[];
+  shirtColor: string;
 };
 
 type Mission = {
@@ -199,21 +203,37 @@ const initialVehicles = (): Vehicle[] => {
   });
 };
 
+const NPC_DATA: { name: string; type: 'villager' | 'farmer'; voice: string; shirtColor: string; dialogs: string[] }[] = [
+  { name: 'Ravi the Farmer', type: 'farmer', voice: 'onyx', shirtColor: '#5DBE7B', dialogs: ['My tractor broke down. Can you bring me one?', 'The harvest is great this year!', 'Watch out for goats on the road.'] },
+  { name: 'Lila the Villager', type: 'villager', voice: 'shimmer', shirtColor: '#118AB2', dialogs: ['Hello driver! Beautiful day for a ride.', 'Did you see the new bakery on the corner?', 'Drive safe, traveler.'] },
+  { name: 'Officer Singh', type: 'villager', voice: 'echo', shirtColor: '#0B6A8C', dialogs: ['Stay within the speed limit.', 'Report to the police station for duty.', 'I keep the village safe.'] },
+  { name: 'Granny Kamala', type: 'villager', voice: 'sage', shirtColor: '#9B5DE5', dialogs: ['In my day, we walked everywhere!', 'Try the chai at the cafe.', 'Be careful with that horn.'] },
+  { name: 'Bobby the Boy', type: 'villager', voice: 'fable', shirtColor: '#FFD166', dialogs: ['Wow, can I drive that?', 'Did you ever see a real ambulance?', 'My uncle owns the farm.'] },
+  { name: 'Farmer Anita', type: 'farmer', voice: 'coral', shirtColor: '#5DBE7B', dialogs: ['The cows are mooing again.', 'I need help moving sacks of grain.', 'Spring is the best season here.'] },
+  { name: 'Doctor Kiran', type: 'villager', voice: 'nova', shirtColor: '#EF476F', dialogs: ['Bring patients to the hospital quickly!', 'Always wear a seat belt.', 'I save lives every day.'] },
+  { name: 'Old Man Hari', type: 'farmer', voice: 'ash', shirtColor: '#A47148', dialogs: ['Back in my day, only horses pulled carts.', 'Tractors are loud but useful.', 'Can you fetch my newspaper?'] },
+  { name: 'Mira the Teacher', type: 'villager', voice: 'shimmer', shirtColor: '#06D6A0', dialogs: ['School is open tomorrow.', 'Always learn something new.', 'Did you finish your homework?'] },
+  { name: 'Farmer Joseph', type: 'farmer', voice: 'onyx', shirtColor: '#5DBE7B', dialogs: ['I plant rice and wheat.', 'Tractor please, my barn awaits!', 'Storm is coming, drive carefully.'] },
+  { name: 'Priya the Cook', type: 'villager', voice: 'coral', shirtColor: '#F4A261', dialogs: ['Cafe opens at sunrise.', 'Try my samosas!', 'I run the village kitchen.'] },
+  { name: 'Mechanic Aman', type: 'villager', voice: 'echo', shirtColor: '#5C7B89', dialogs: ['Need a tune up?', 'Bikes are my specialty.', 'Drop by the depot for repairs.'] },
+  { name: 'Farmer Devi', type: 'farmer', voice: 'sage', shirtColor: '#A47148', dialogs: ['My goats escaped again.', 'Big farm, big work.', 'Sun rises, work begins.'] },
+  { name: 'Postman Raju', type: 'villager', voice: 'fable', shirtColor: '#FFD166', dialogs: ['Got mail to deliver!', 'Have you seen the new shop?', 'Bicycles are eco friendly.'] },
+];
+
 const initialNpcs = (): Npc[] => {
-  const npcs: Npc[] = [];
-  for (let i = 0; i < 14; i++) {
-    const isFarmer = i % 2 === 0;
-    npcs.push({
-      id: `npc-${i}`,
-      x: 200 + Math.random() * (WORLD_W - 400),
-      y: 200 + Math.random() * (WORLD_H - 400),
-      vx: (Math.random() - 0.5) * 1.2,
-      vy: (Math.random() - 0.5) * 1.2,
-      type: isFarmer ? 'farmer' : 'villager',
-      color: isFarmer ? '#A47148' : '#9B5DE5',
-    });
-  }
-  return npcs;
+  return NPC_DATA.map((d, i) => ({
+    id: `npc-${i}`,
+    x: 200 + Math.random() * (WORLD_W - 400),
+    y: 200 + Math.random() * (WORLD_H - 400),
+    vx: (Math.random() - 0.5) * 1.2,
+    vy: (Math.random() - 0.5) * 1.2,
+    type: d.type,
+    color: d.type === 'farmer' ? '#A47148' : '#9B5DE5',
+    name: d.name,
+    voice: d.voice,
+    dialogs: d.dialogs,
+    shirtColor: d.shirtColor,
+  }));
 };
 
 // ---------- Player ID ----------
@@ -513,15 +533,73 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
   const [hornActive, setHornActive] = useState(false);
   const [tick, setTick] = useState(0);
   const [missionToast, setMissionToast] = useState<string>('');
+  const [activeNpc, setActiveNpc] = useState<Npc | null>(null);
+  const [activeDialog, setActiveDialog] = useState<string>('');
+  const [ttsLoading, setTtsLoading] = useState<boolean>(false);
+  // Day/night cycle (0..1 where 0=morning, 0.25=noon, 0.5=dusk, 0.75=night)
+  const [timeOfDay, setTimeOfDay] = useState<number>(0.1);
+  const [weather, setWeather] = useState<'clear' | 'rain'>('clear');
 
   const scoreRef = useRef(0);
   const missionsCountRef = useRef(0);
   const healthRef = useRef(100);
   const timeAccumRef = useRef(0);
+  const audioElRef = useRef<any>(null);
 
   // initial mission
   useEffect(() => {
     missionRef.current = generateMission();
+  }, []);
+
+  // day/night cycle - one full cycle per 4 minutes
+  useEffect(() => {
+    const id = setInterval(() => {
+      setTimeOfDay(t => (t + 1 / 240) % 1);
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // weather: random change every ~45-90s
+  useEffect(() => {
+    const cycle = () => {
+      setWeather(prev => (prev === 'rain' ? 'clear' : Math.random() < 0.4 ? 'rain' : 'clear'));
+    };
+    const id = setInterval(cycle, 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  // generate rain drops
+  const rainDrops = React.useMemo(() => {
+    const arr: { x: number; y: number; d: number }[] = [];
+    for (let i = 0; i < 80; i++) {
+      arr.push({ x: Math.random() * SCREEN_W, y: Math.random() * SCREEN_H, d: 4 + Math.random() * 8 });
+    }
+    return arr;
+  }, [SCREEN_W, SCREEN_H]);
+
+  const playNpcDialog = useCallback(async (n: Npc) => {
+    SFX.uiTap();
+    const line = n.dialogs[Math.floor(Math.random() * n.dialogs.length)];
+    setActiveNpc(n);
+    setActiveDialog(line);
+    setTtsLoading(true);
+    try {
+      const r = await fetch(`${BACKEND}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: `${n.name} says: ${line}`, voice: n.voice }),
+      });
+      const d = await r.json();
+      if (d.audio_base64 && typeof window !== 'undefined' && (window as any).Audio) {
+        if (audioElRef.current) {
+          try { audioElRef.current.pause(); } catch (_e) {}
+        }
+        const a = new (window as any).Audio(`data:audio/mp3;base64,${d.audio_base64}`);
+        audioElRef.current = a;
+        a.play().catch(() => {});
+      }
+    } catch (_e) {}
+    setTtsLoading(false);
   }, []);
 
   function generateMission(): Mission {
@@ -827,7 +905,7 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
             transform: [{ translateX: -camX }, { translateY: -camY }],
             backgroundColor: C.grass,
           }}
-          pointerEvents="none"
+          pointerEvents="box-none"
         >
           {/* Grass texture: scatter dark patches */}
           {GRASS_PATCHES.map((g, i) => (
@@ -858,7 +936,7 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
             const isTarget = mission && b.id === mission.targetBuildingId;
             return (
               <View key={b.id} style={{ position: 'absolute', left: b.x, top: b.y, width: b.w, height: b.h }}>
-                <View style={{ flex: 1, backgroundColor: b.color, borderRadius: 10, borderWidth: 3, borderColor: '#073B4C', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.3, shadowOffset: { width: 4, height: 6 }, shadowRadius: 0 }}>
+                <View style={{ flex: 1, backgroundColor: b.color, borderRadius: 10, borderWidth: 3, borderColor: '#073B4C', justifyContent: 'center', alignItems: 'center' }}>
                   <View style={{ position: 'absolute', top: 8, left: 8, right: 8, height: 30, backgroundColor: 'rgba(0,0,0,0.25)', borderRadius: 6 }} />
                   <View style={{ position: 'absolute', top: b.h * 0.45, left: b.w * 0.35, width: b.w * 0.3, height: b.h * 0.5, backgroundColor: '#073B4C', borderTopLeftRadius: 4, borderTopRightRadius: 4 }} />
                   <Text style={{ color: '#fff', fontWeight: '800', fontSize: 14, position: 'absolute', top: 12 }} numberOfLines={1}>{b.label}</Text>
@@ -872,12 +950,22 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
             );
           })}
 
-          {/* NPCs */}
+          {/* NPCs (tappable for dialog) */}
           {npcsRef.current.map(n => (
-            <View key={n.id} style={{ position: 'absolute', left: n.x - 8, top: n.y - 8, width: 16, height: 22 }}>
-              <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: n.color, borderWidth: 2, borderColor: '#073B4C' }} />
-              <View style={{ width: 12, height: 8, backgroundColor: n.type === 'farmer' ? '#5DBE7B' : '#118AB2', alignSelf: 'center', marginTop: -2, borderRadius: 2 }} />
-            </View>
+            <TouchableOpacity
+              key={n.id}
+              activeOpacity={0.6}
+              onPress={() => playNpcDialog(n)}
+              testID={`npc-${n.id}`}
+              style={{ position: 'absolute', left: n.x - 14, top: n.y - 14, width: 28, height: 32 }}
+            >
+              {/* shadow */}
+              <View style={{ position: 'absolute', left: 4, top: 22, width: 20, height: 6, borderRadius: 10, backgroundColor: 'rgba(0,0,0,0.35)' }} />
+              {/* head */}
+              <View style={{ width: 18, height: 18, borderRadius: 9, backgroundColor: n.color, borderWidth: 2, borderColor: '#073B4C', alignSelf: 'center' }} />
+              {/* body */}
+              <View style={{ width: 14, height: 10, backgroundColor: n.shirtColor, alignSelf: 'center', marginTop: -2, borderRadius: 2, borderWidth: 1, borderColor: '#073B4C' }} />
+            </TouchableOpacity>
           ))}
 
           {/* Vehicles */}
@@ -917,6 +1005,21 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
             <View style={{ position: 'absolute', left: playerRef.current.x - 80, top: playerRef.current.y - 80, width: 160, height: 160, borderRadius: 80, borderWidth: 4, borderColor: C.primary, opacity: 0.6 }} />
           )}
         </View>
+
+        {/* Night tint overlay (above world, below HUD) */}
+        {(() => { const nt = nightTint(timeOfDay); return nt.alpha > 0.02 ? (
+          <View pointerEvents="none" style={{ ...StyleSheet.absoluteFillObject, backgroundColor: nt.color, opacity: nt.alpha }} />
+        ) : null; })()}
+
+        {/* Rain particles overlay */}
+        {weather === 'rain' && (
+          <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
+            {rainDrops.map((d, i) => (
+              <View key={`rd-${i}`} style={{ position: 'absolute', left: (d.x + (tick * 6) % SCREEN_W) % SCREEN_W, top: (d.y + (tick * (8 + d.d)) ) % SCREEN_H, width: 2, height: 12, backgroundColor: 'rgba(170,200,255,0.7)', borderRadius: 1, transform: [{ rotate: '12deg' }] }} />
+            ))}
+            <View style={{ ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(120,140,180,0.18)' }} />
+          </View>
+        )}
       </View>
 
       {/* HUD top */}
@@ -938,6 +1041,16 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
             <MaterialCommunityIcons name="speedometer" size={16} color={C.secondary} />
             <Text style={styles.hudPillText}>  {Math.floor((playerRef.current.speed || 0) * 10)}</Text>
           </View>
+          <View style={styles.hudPill} testID="hud-time">
+            <MaterialCommunityIcons name={timeOfDay > 0.7 || timeOfDay < 0.05 ? 'weather-night' : 'white-balance-sunny'} size={14} color={C.primaryDark} />
+            <Text style={styles.hudPillText}>  {timePhaseLabel(timeOfDay)}</Text>
+          </View>
+          {weather === 'rain' && (
+            <View style={styles.hudPill} testID="hud-weather">
+              <MaterialCommunityIcons name="weather-pouring" size={14} color={C.secondary} />
+              <Text style={styles.hudPillText}>  Rain</Text>
+            </View>
+          )}
           <TouchableOpacity testID="pause-button" style={[styles.hudPill, { backgroundColor: C.danger }]} onPress={() => setPaused(true)}>
             <FontAwesome5 name="pause" size={12} color="#fff" />
           </TouchableOpacity>
@@ -1024,6 +1137,26 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
           </View>
         </View>
       )}
+
+      {/* NPC Dialog */}
+      {activeNpc && (
+        <View style={styles.dialogOverlay} testID="npc-dialog">
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setActiveNpc(null)} />
+          <View style={styles.dialogCard}>
+            <View style={styles.dialogHeader}>
+              <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: activeNpc.color, borderWidth: 2, borderColor: '#073B4C', justifyContent: 'center', alignItems: 'center' }}>
+                <FontAwesome5 name={activeNpc.type === 'farmer' ? 'tractor' : 'user'} size={14} color="#fff" />
+              </View>
+              <Text style={styles.dialogName} testID="npc-dialog-name">{activeNpc.name}</Text>
+              {ttsLoading && <ActivityIndicator size="small" color={C.secondary} />}
+            </View>
+            <Text style={styles.dialogText} testID="npc-dialog-text">"{activeDialog}"</Text>
+            <TouchableOpacity testID="npc-dialog-close" style={[styles.gameBtnPrimary, { minWidth: 160 }]} onPress={() => { setActiveNpc(null); try { audioElRef.current?.pause(); } catch (_e) {} }}>
+              <Text style={styles.gameBtnPrimaryText}>CLOSE</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -1038,6 +1171,52 @@ function iconForVehicle(t: VehicleType): any {
     case 'tractor': return 'tractor';
     default: return 'car';
   }
+}
+
+// shade: lighten/darken a hex color by amount (-100..100)
+function shade(hex: string, amt: number): string {
+  const m = /^#?([a-f\d]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const num = parseInt(m[1], 16);
+  let r = (num >> 16) + amt;
+  let g = ((num >> 8) & 0xff) + amt;
+  let b = (num & 0xff) + amt;
+  r = Math.max(0, Math.min(255, r));
+  g = Math.max(0, Math.min(255, g));
+  b = Math.max(0, Math.min(255, b));
+  return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+}
+
+// skyColor returns a sky color based on time-of-day t (0..1)
+function skyColor(t: number): string {
+  // 0.0 morning peach, 0.25 noon blue, 0.5 dusk orange, 0.75 night dark blue
+  if (t < 0.25) return lerpColor('#FFD8A8', '#7DD3FC', t / 0.25);
+  if (t < 0.5)  return lerpColor('#7DD3FC', '#FB923C', (t - 0.25) / 0.25);
+  if (t < 0.75) return lerpColor('#FB923C', '#1E3A8A', (t - 0.5) / 0.25);
+  return lerpColor('#1E3A8A', '#FFD8A8', (t - 0.75) / 0.25);
+}
+
+function nightTint(t: number): { color: string; alpha: number } {
+  // night peak around t = 0.85
+  const dist = Math.abs(t - 0.85);
+  const a = Math.max(0, 0.55 - dist * 1.6);
+  return { color: '#0B1639', alpha: a };
+}
+
+function lerpColor(a: string, b: string, p: number): string {
+  const pa = parseInt(a.slice(1), 16);
+  const pb = parseInt(b.slice(1), 16);
+  const r = Math.round(((pa >> 16) & 0xff) * (1 - p) + ((pb >> 16) & 0xff) * p);
+  const g = Math.round(((pa >> 8) & 0xff) * (1 - p) + ((pb >> 8) & 0xff) * p);
+  const bl = Math.round((pa & 0xff) * (1 - p) + (pb & 0xff) * p);
+  return '#' + ((1 << 24) + (r << 16) + (g << 8) + bl).toString(16).slice(1);
+}
+
+function timePhaseLabel(t: number): string {
+  if (t < 0.2) return 'Morning';
+  if (t < 0.45) return 'Noon';
+  if (t < 0.7) return 'Dusk';
+  return 'Night';
 }
 
 // pre-generate grass patches deterministically-ish
@@ -1148,4 +1327,10 @@ const styles = StyleSheet.create({
   pauseOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center' },
   pauseCard: { backgroundColor: '#fff', padding: 24, borderRadius: 20, alignItems: 'center', borderWidth: 3, borderColor: C.textPrimary, minWidth: 280 },
   pauseTitle: { fontSize: 32, fontWeight: '900', color: C.textPrimary, marginBottom: 16 },
+
+  dialogOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center', padding: 20 },
+  dialogCard: { backgroundColor: '#FFF8E7', borderRadius: 20, padding: 18, borderWidth: 3, borderColor: C.textPrimary, width: '100%', maxWidth: 360, alignItems: 'center' },
+  dialogHeader: { flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch', marginBottom: 12, gap: 10 },
+  dialogName: { flex: 1, fontSize: 18, fontWeight: '900', color: C.textPrimary },
+  dialogText: { fontSize: 16, color: C.textPrimary, fontStyle: 'italic', textAlign: 'center', marginBottom: 16, lineHeight: 22 },
 });
