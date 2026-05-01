@@ -15,6 +15,8 @@ import {
   Linking,
 } from 'react-native';
 import { MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
+import { Canvas, useFrame, useThree } from '@react-three/fiber/native';
+import * as THREE from 'three';
 
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
 const ORIGIN = typeof window !== 'undefined' && window.location ? window.location.origin : (BACKEND as string);
@@ -1641,6 +1643,121 @@ function iconForVehicle(t: VehicleType): any {
     case 'tractor': return 'tractor';
     default: return 'car';
   }
+}
+
+// ---------- 3D scene helpers ----------
+function CameraFollow({ playerRef }: any) {
+  const { camera } = useThree();
+  useFrame(() => {
+    const p = playerRef.current;
+    const tgt = new THREE.Vector3(p.x, 70, p.y + 100);
+    camera.position.lerp(tgt, 0.15);
+    camera.lookAt(p.x, 0, p.y);
+  });
+  return null;
+}
+
+function DynamicEntities({ playerRef, vehiclesRef, npcsRef }: any) {
+  const playerMesh = useRef<any>(null);
+  const vehMeshes = useRef<Record<string, any>>({});
+  const npcMeshes = useRef<Record<string, any>>({});
+  useFrame(() => {
+    const p = playerRef.current;
+    if (playerMesh.current) {
+      playerMesh.current.position.set(p.x, 4, p.y);
+      playerMesh.current.visible = p.onFoot;
+    }
+    for (const v of vehiclesRef.current) {
+      const m = vehMeshes.current[v.id];
+      if (m) {
+        m.position.set(v.x, 4, v.y);
+        m.rotation.y = -v.angle - Math.PI / 2;
+      }
+    }
+    for (const n of npcsRef.current) {
+      const m = npcMeshes.current[n.id];
+      if (m) m.position.set(n.x, 3, n.y);
+    }
+  });
+  return (
+    <>
+      <mesh ref={playerMesh} castShadow>
+        <boxGeometry args={[12, 14, 12]} />
+        <meshStandardMaterial color="#FFD166" />
+      </mesh>
+      {vehiclesRef.current.map((v: any) => (
+        <mesh key={v.id} ref={(el: any) => { if (el) vehMeshes.current[v.id] = el; }} castShadow>
+          <boxGeometry args={[v.length, 8, v.width]} />
+          <meshStandardMaterial color={v.color} />
+        </mesh>
+      ))}
+      {npcsRef.current.map((n: any) => (
+        <mesh key={n.id} ref={(el: any) => { if (el) npcMeshes.current[n.id] = el; }} castShadow>
+          <boxGeometry args={[8, 12, 8]} />
+          <meshStandardMaterial color={n.color} />
+        </mesh>
+      ))}
+    </>
+  );
+}
+
+function World3DScene({ playerRef, vehiclesRef, npcsRef, missionRef, timeOfDay }: any) {
+  // Lighting tuned to time of day
+  const isNight = timeOfDay > 0.7 || timeOfDay < 0.05;
+  const ambient = isNight ? 0.25 : 0.6;
+  const sun = isNight ? 0.2 : 1.0;
+  const target = missionRef.current ? BUILDINGS.find(b => b.id === missionRef.current.targetBuildingId) : null;
+  return (
+    <>
+      <color attach="background" args={[isNight ? '#0B1639' : '#7DD3FC']} />
+      <fog attach="fog" args={[isNight ? '#0B1639' : '#B6E3FF', 200, 1500]} />
+      <ambientLight intensity={ambient} />
+      <directionalLight position={[600, 800, 200]} intensity={sun} castShadow />
+
+      <CameraFollow playerRef={playerRef} />
+
+      {/* Ground */}
+      <mesh rotation-x={-Math.PI / 2} position={[1200, 0, 1200]} receiveShadow>
+        <planeGeometry args={[2400, 2400]} />
+        <meshStandardMaterial color="#80ED99" />
+      </mesh>
+
+      {/* Roads */}
+      {ROADS.map((r, i) => (
+        <mesh key={`r${i}`} rotation-x={-Math.PI / 2} position={[r.x + r.w / 2, 0.1, r.y + r.h / 2]} receiveShadow>
+          <planeGeometry args={[r.w, r.h]} />
+          <meshStandardMaterial color="#6B7280" />
+        </mesh>
+      ))}
+
+      {/* Buildings as 3D boxes */}
+      {BUILDINGS.map(b => {
+        const isTarget = target && b.id === target.id;
+        const h = 30 + (b.id.charCodeAt(0) % 4) * 6;
+        return (
+          <group key={b.id}>
+            <mesh position={[b.x + b.w / 2, h / 2, b.y + b.h / 2]} castShadow receiveShadow>
+              <boxGeometry args={[b.w, h, b.h]} />
+              <meshStandardMaterial color={b.color} />
+            </mesh>
+            {/* Roof accent */}
+            <mesh position={[b.x + b.w / 2, h + 1, b.y + b.h / 2]}>
+              <boxGeometry args={[b.w + 4, 2, b.h + 4]} />
+              <meshStandardMaterial color="#073B4C" />
+            </mesh>
+            {isTarget && (
+              <mesh position={[b.x + b.w / 2, h + 18, b.y + b.h / 2]}>
+                <coneGeometry args={[8, 12, 4]} />
+                <meshStandardMaterial color="#EF476F" emissive="#EF476F" emissiveIntensity={0.5} />
+              </mesh>
+            )}
+          </group>
+        );
+      })}
+
+      <DynamicEntities playerRef={playerRef} vehiclesRef={vehiclesRef} npcsRef={npcsRef} />
+    </>
+  );
 }
 
 // shade: lighten/darken a hex color by amount (-100..100)
