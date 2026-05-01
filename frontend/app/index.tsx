@@ -12,10 +12,48 @@ import {
   ActivityIndicator,
   StatusBar,
   Platform,
+  Linking,
 } from 'react-native';
 import { MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
+const ORIGIN = typeof window !== 'undefined' && window.location ? window.location.origin : (BACKEND as string);
+
+// ---------- Simple Sound (Web Audio API) ----------
+let audioCtx: any = null;
+const getAC = () => {
+  if (typeof window === 'undefined') return null;
+  if (audioCtx) return audioCtx;
+  try {
+    const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (Ctx) audioCtx = new Ctx();
+  } catch (_e) {}
+  return audioCtx;
+};
+const playTone = (freq: number, dur: number, type: OscillatorType = 'sine', vol = 0.15) => {
+  try {
+    const ac = getAC();
+    if (!ac) return;
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.value = vol;
+    osc.connect(gain);
+    gain.connect(ac.destination);
+    osc.start();
+    gain.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
+    osc.stop(ac.currentTime + dur);
+  } catch (_e) {}
+};
+const SFX = {
+  uiTap: () => playTone(800, 0.06, 'square', 0.08),
+  horn: () => { playTone(420, 0.18, 'sawtooth', 0.18); setTimeout(() => playTone(360, 0.16, 'sawtooth', 0.18), 60); },
+  missionDone: () => { playTone(660, 0.12, 'triangle', 0.14); setTimeout(() => playTone(880, 0.16, 'triangle', 0.14), 120); setTimeout(() => playTone(1100, 0.2, 'triangle', 0.14), 260); },
+  coin: () => { playTone(1200, 0.08, 'square', 0.1); setTimeout(() => playTone(1600, 0.1, 'square', 0.1), 70); },
+  crash: () => playTone(120, 0.25, 'sawtooth', 0.2),
+  enter: () => playTone(520, 0.1, 'triangle', 0.12),
+};
 
 // ---------- Theme ----------
 const C = {
@@ -212,6 +250,7 @@ export default function App() {
   }, []);
 
   const startGame = () => {
+    SFX.uiTap();
     if (!playerName) {
       setScreen('name');
     } else {
