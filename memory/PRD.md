@@ -1,39 +1,46 @@
 # PRD - Open World Village Drive
 
 ## Overview
-A 2D top-down open-world mobile game built with Expo + FastAPI + MongoDB. Players drive different vehicles around a village world, talk to NPCs (powered by AI voice), complete delivery missions, and compete on a leaderboard.
+A 2D top-down open-world mobile game (Expo + FastAPI + MongoDB). Players pick a vehicle, drive around a village, talk to AI-voiced NPCs, complete missions for score + coins, buy unlockable premium vehicles, and compete on daily + global leaderboards.
+
+## Screens / Flow
+Home → Name (first-time) → **Vehicle Select** → Game → Game Over → Leaderboard
+Home → **Shop** ↔ Vehicle Select
+Home → **Daily Challenge** → Vehicle Select → Game (daily mode)
 
 ## Core Features
-- Home / Name / Game / Game Over / Leaderboard screens
-- Open world (2400×2400) with 16 unique buildings, gridded roads, grass terrain
-- 6 vehicle types (Car, Bike, Ambulance, Police, Cycle, Tractor) with unique colors / max-speeds
-- 14 unique NPCs (villagers + farmers) with names, personalities, dialog lines, voices
-- **Tap any NPC to open a dialog modal** with their name + line + voice playback (OpenAI TTS via Emergent LLM key)
-- HUD: Score, Missions, Health, Speed, **Time-of-day pill (Morning/Noon/Dusk/Night)**, **Weather pill (Rain)**, Pause
-- Mission system with target arrow + distance
-- **Day/night cycle** — sky color + tint overlay shifts every ~4 minutes
-- **Weather system** — clear/rain alternating every ~60s with rain particles overlay
-- Virtual joystick + chunky action buttons (Enter/Exit, Horn, Boost)
-- Web-Audio sound effects (UI tap, horn, mission-complete chime, coin, crash)
-- Collision damage, pause modal, leaderboard
+- Open world (2400×2400) with 16 buildings, gridded roads, grass terrain
+- 6 vehicles — Car / Bike / Cycle (free), Ambulance ($250 coins) / Police ($400) / Tractor ($200) (premium, unlock with coins)
+- 14 unique AI NPCs — tap to open dialog with OpenAI-TTS voice playback (8 distinct voices, 3 lines each)
+- Mission system — random vehicle + target building; +150 score, +10 coins per completion
+- **Daily Challenge** — separate daily leaderboard (resets every day) tracked at backend; HUD shows "DAILY" tag
+- **Coin economy** — earn from missions, spend on vehicle unlocks
+- **Coin Shop** — Stripe checkout for $0.99 / $3.99 / $9.99 coin packs (test mode); polled on return; auto-grants coins
+- HUD — Score, Missions, Health, Speed, Time-of-day pill (Morning/Noon/Dusk/Night), Weather pill (Rain), Pause
+- Day/night cycle (4-min loop) + tint overlay
+- Weather (clear/rain) with rain particles
+- Joystick + 3 chunky action buttons (Enter/Exit, Horn, Boost)
+- Web-Audio sound effects (UI tap, horn, mission-complete chime, coin, crash, vehicle enter)
+- Landscape orientation supported (`app.json` `"orientation": "default"`)
 
 ## Backend (/api)
-- `POST/GET /api/scores` & `/api/scores/leaderboard`
-- `POST/GET /api/progress` & `/api/progress/{player_id}`, `POST /api/progress/spend`
+- `GET /api/scores/leaderboard`, `POST /api/scores`
 - `GET /api/daily/seed`, `POST /api/daily/scores`, `GET /api/daily/leaderboard`
-- `POST /api/ghosts`, `GET /api/ghosts/top`
+- `GET /api/progress/{player_id}`, `POST /api/progress`, `POST /api/progress/spend`
 - `GET /api/coin-packs`, `POST /api/checkout`, `GET /api/checkout/status/{id}`, `POST /api/webhook/stripe`
-- **`POST /api/tts`** — OpenAI text-to-speech, returns base64 mp3, in-memory cached
+- `POST /api/tts` — OpenAI TTS, base64 mp3 cached
+- `POST /api/ghosts`, `GET /api/ghosts/top` (used for future ghost-car replay)
 
 ## Tech
-- Frontend: Expo Router single index.tsx, React Native primitives, @expo/vector-icons, PanResponder game loop
+- Frontend: Expo Router single index.tsx, React Native primitives, @expo/vector-icons, PanResponder loop ~30 fps
 - Backend: FastAPI + Motor + MongoDB; emergentintegrations for Stripe + OpenAI TTS
 - Env vars: EMERGENT_LLM_KEY, STRIPE_API_KEY, MONGO_URL, DB_NAME
 
-## Notes
-- 2.5D pseudo-3D world tilt was attempted but reverted — the `transform: rotateX` on the world container caused rendering issues in the Expo Router web bundle (content rendered offscreen). Game ships in flat 2D top-down which works flawlessly.
-- Multiplayer text/voice chat, vehicle select screen with cosmetic colors, coin shop UI, and ghost-car replay are scaffolded server-side but not yet wired into the frontend (deferred to future sessions).
-
 ## Deployment
-- Health check: PASS (deployment_agent confirmed ready)
-- Use **Publish** button (top-right) to deploy.
+- Health check: PASS (deployment_agent confirmed earlier)
+- Use **Publish** button (top-right) to deploy
+
+## Pending future sessions
+- Multiplayer text chat + ghost cars (WebSocket)
+- True 3D world (three.js / expo-gl)
+- Voice notes + Whisper voice-to-text

@@ -245,7 +245,9 @@ const getPlayerId = () => {
 };
 
 // ---------- Main App ----------
-type Screen = 'home' | 'name' | 'play' | 'gameover' | 'leaderboard';
+type Screen = 'home' | 'name' | 'vehicleSelect' | 'shop' | 'play' | 'gameover' | 'leaderboard';
+
+const VEHICLE_PRICES: Record<string, number> = { ambulance: 250, police: 400, tractor: 200 };
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('home');
@@ -254,43 +256,86 @@ export default function App() {
   const [lastScore, setLastScore] = useState<number>(0);
   const [lastMissions, setLastMissions] = useState<number>(0);
   const [bestScore, setBestScore] = useState<number>(0);
+  const [coins, setCoins] = useState<number>(0);
+  const [unlocks, setUnlocks] = useState<string[]>([]);
+  const [selectedVehicle, setSelectedVehicle] = useState<VehicleType>('car');
+  const [dailyMode, setDailyMode] = useState<boolean>(false);
 
-  // load saved progress
-  useEffect(() => {
+  const refreshProgress = useCallback(() => {
     const pid = getPlayerId();
-    fetch(`${BACKEND}/api/progress/${pid}`)
+    return fetch(`${BACKEND}/api/progress/${pid}`)
       .then(r => (r.ok ? r.json() : null))
       .then(d => {
         if (d && d.player_name) {
           setPlayerName(d.player_name);
           setBestScore(d.best_score || 0);
+          setCoins(d.coins || 0);
+          setUnlocks(d.unlocks || []);
         }
+        return d;
       })
-      .catch(() => {});
+      .catch(() => null);
   }, []);
+
+  useEffect(() => { refreshProgress(); }, [refreshProgress]);
+
+  // Stripe success polling on app load
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const sid = params.get('stripe_session');
+    if (!sid) return;
+    let attempts = 0;
+    const poll = async () => {
+      try {
+        const r = await fetch(`${BACKEND}/api/checkout/status/${sid}`);
+        const d = await r.json();
+        if (d.payment_status === 'paid') {
+          await refreshProgress();
+          if (typeof window !== 'undefined' && window.history) window.history.replaceState({}, '', window.location.pathname);
+          SFX.coin();
+          return;
+        }
+        if (d.status === 'expired') return;
+      } catch (_e) {}
+      attempts += 1;
+      if (attempts < 8) setTimeout(poll, 2000);
+    };
+    poll();
+  }, [refreshProgress]);
 
   const startGame = () => {
     SFX.uiTap();
-    if (!playerName) {
-      setScreen('name');
-    } else {
-      setScreen('play');
-    }
+    setDailyMode(false);
+    if (!playerName) setScreen('name');
+    else setScreen('vehicleSelect');
   };
 
-  const handleGameOver = useCallback(async (score: number, missions: number) => {
+  const startDaily = () => {
+    SFX.uiTap();
+    setDailyMode(true);
+    if (!playerName) setScreen('name');
+    else setScreen('vehicleSelect');
+  };
+
+  const handleGameOver = useCallback(async (score: number, missions: number, coinsEarned: number, vehicle: string) => {
     setLastScore(score);
     setLastMissions(missions);
     const newBest = Math.max(bestScore, score);
     setBestScore(newBest);
+    setCoins(c => c + coinsEarned);
     try {
-      await fetch(`${BACKEND}/api/scores`, {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      await fetch(`${BACKEND}/api/${dailyMode ? 'daily/scores' : 'scores'}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           player_name: playerName || 'Anon',
           score,
           missions_completed: missions,
+          vehicle,
+          is_daily: dailyMode,
+          daily_date: dailyMode ? todayIso : undefined,
         }),
       });
       await fetch(`${BACKEND}/api/progress`, {
@@ -301,14 +346,38 @@ export default function App() {
           player_name: playerName || 'Anon',
           best_score: newBest,
           total_missions: missions,
+          earned_coins_delta: coinsEarned,
+          last_vehicle: vehicle,
         }),
       });
     } catch (_e) {}
     setScreen('gameover');
-  }, [playerName, bestScore]);
+  }, [playerName, bestScore, dailyMode]);
+
+  const onPurchaseVehicle = useCallback(async (type: VehicleType) => {
+    const cost = VEHICLE_PRICES[type] || 999;
+    if (coins < cost) {
+      return false;
+    }
+    try {
+      const r = await fetch(`${BACKEND}/api/progress/spend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player_id: getPlayerId(), item_id: `vehicle:${type}`, cost }),
+      });
+      if (!r.ok) return false;
+      const d = await r.json();
+      setCoins(d.coins);
+      setUnlocks(d.unlocks || []);
+      SFX.coin();
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }, [coins]);
 
   if (screen === 'home') {
-    return <HomeScreen onPlay={startGame} onLeaderboard={() => setScreen('leaderboard')} bestScore={bestScore} playerName={playerName} />;
+    return <HomeScreen onPlay={startGame} onLeaderboard={() => setScreen('leaderboard')} onShop={() => { SFX.uiTap(); setScreen('shop'); }} onDaily={startDaily} bestScore={bestScore} playerName={playerName} coins={coins} />;
   }
   if (screen === 'name') {
     return (
@@ -319,14 +388,38 @@ export default function App() {
           const n = (pendingName || '').trim() || 'Driver';
           setPlayerName(n);
           setPendingName('');
-          setScreen('play');
+          setScreen('vehicleSelect');
         }}
         onBack={() => setScreen('home')}
       />
     );
   }
+  if (screen === 'vehicleSelect') {
+    return (
+      <VehicleSelectScreen
+        coins={coins}
+        unlocks={unlocks}
+        selected={selectedVehicle}
+        onSelect={setSelectedVehicle}
+        onPurchase={onPurchaseVehicle}
+        dailyMode={dailyMode}
+        onStart={() => { SFX.uiTap(); setScreen('play'); }}
+        onShop={() => setScreen('shop')}
+        onBack={() => setScreen('home')}
+      />
+    );
+  }
+  if (screen === 'shop') {
+    return (
+      <ShopScreen
+        coins={coins}
+        playerId={getPlayerId()}
+        onBack={() => setScreen(playerName ? 'vehicleSelect' : 'home')}
+      />
+    );
+  }
   if (screen === 'play') {
-    return <GameScreen playerName={playerName} onExit={handleGameOver} />;
+    return <GameScreen playerName={playerName} initialVehicle={selectedVehicle} dailyMode={dailyMode} onExit={handleGameOver} />;
   }
   if (screen === 'gameover') {
     return (
@@ -334,6 +427,8 @@ export default function App() {
         score={lastScore}
         missions={lastMissions}
         bestScore={bestScore}
+        coins={coins}
+        dailyMode={dailyMode}
         onRetry={() => setScreen('play')}
         onHome={() => setScreen('home')}
         onLeaderboard={() => setScreen('leaderboard')}
@@ -347,7 +442,7 @@ export default function App() {
 }
 
 // ---------- Home Screen ----------
-function HomeScreen({ onPlay, onLeaderboard, bestScore, playerName }: any) {
+function HomeScreen({ onPlay, onLeaderboard, onShop, onDaily, bestScore, playerName, coins }: any) {
   return (
     <SafeAreaView style={styles.fullScreen} testID="home-screen">
       <StatusBar barStyle="dark-content" />
@@ -362,31 +457,48 @@ function HomeScreen({ onPlay, onLeaderboard, bestScore, playerName }: any) {
           <Text style={styles.homeSub}>Drive. Explore. Complete missions.</Text>
 
           <View style={styles.homeIconRow}>
-            <MaterialCommunityIcons name="car-hatchback" size={36} color={C.secondary} />
-            <MaterialCommunityIcons name="ambulance" size={36} color={C.danger} />
-            <MaterialCommunityIcons name="police-badge" size={36} color={C.secondaryDark} />
-            <MaterialCommunityIcons name="tractor" size={36} color={C.accent} />
-            <MaterialCommunityIcons name="motorbike" size={36} color={C.primaryDark} />
-            <MaterialCommunityIcons name="bike" size={36} color="#A47148" />
+            <MaterialCommunityIcons name="car-hatchback" size={32} color={C.secondary} />
+            <MaterialCommunityIcons name="ambulance" size={32} color={C.danger} />
+            <MaterialCommunityIcons name="police-badge" size={32} color={C.secondaryDark} />
+            <MaterialCommunityIcons name="tractor" size={32} color={C.accent} />
+            <MaterialCommunityIcons name="motorbike" size={32} color={C.primaryDark} />
+            <MaterialCommunityIcons name="bike" size={32} color="#A47148" />
           </View>
 
           {playerName ? (
             <Text style={styles.homeWelcome}>Welcome back, {playerName}!</Text>
           ) : null}
 
-          <TouchableOpacity testID="play-button" style={[styles.gameBtnPrimary, { marginTop: 16 }]} onPress={onPlay} activeOpacity={0.85}>
+          <TouchableOpacity testID="play-button" style={[styles.gameBtnPrimary, { marginTop: 12 }]} onPress={onPlay} activeOpacity={0.85}>
             <FontAwesome5 name="play" size={18} color={C.textPrimary} />
             <Text style={styles.gameBtnPrimaryText}>  PLAY</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity testID="leaderboard-button" style={styles.gameBtnSecondary} onPress={onLeaderboard} activeOpacity={0.85}>
-            <FontAwesome5 name="trophy" size={16} color={C.textInverse} />
-            <Text style={styles.gameBtnSecondaryText}>  LEADERBOARD</Text>
+          <TouchableOpacity testID="daily-button" style={[styles.gameBtnSecondary, { backgroundColor: C.danger, borderColor: C.dangerDark }]} onPress={onDaily} activeOpacity={0.85}>
+            <FontAwesome5 name="calendar-day" size={16} color={C.textInverse} />
+            <Text style={styles.gameBtnSecondaryText}>  DAILY CHALLENGE</Text>
           </TouchableOpacity>
 
-          <View style={styles.homeBestPill} testID="home-best-score">
-            <FontAwesome5 name="star" size={14} color={C.primaryDark} />
-            <Text style={styles.homeBestText}>  Best: {bestScore}</Text>
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+            <TouchableOpacity testID="leaderboard-button" style={[styles.gameBtnSecondary, { minWidth: 0, flex: 1 }]} onPress={onLeaderboard} activeOpacity={0.85}>
+              <FontAwesome5 name="trophy" size={14} color={C.textInverse} />
+              <Text style={styles.gameBtnSecondaryText}>  LEADER</Text>
+            </TouchableOpacity>
+            <TouchableOpacity testID="shop-button" style={[styles.gameBtnSecondary, { backgroundColor: C.accent, borderColor: '#048D6B', minWidth: 0, flex: 1 }]} onPress={onShop} activeOpacity={0.85}>
+              <FontAwesome5 name="store" size={14} color="#fff" />
+              <Text style={styles.gameBtnSecondaryText}>  SHOP</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 16 }}>
+            <View style={styles.homeBestPill} testID="home-best-score">
+              <FontAwesome5 name="star" size={14} color={C.primaryDark} />
+              <Text style={styles.homeBestText}>  Best: {bestScore}</Text>
+            </View>
+            <View style={[styles.homeBestPill, { backgroundColor: '#FEF3C7' }]} testID="home-coins">
+              <FontAwesome5 name="coins" size={14} color={C.primaryDark} />
+              <Text style={styles.homeBestText}>  {coins}</Text>
+            </View>
           </View>
         </View>
       </View>
@@ -422,11 +534,11 @@ function NameScreen({ value, onChange, onSubmit, onBack }: any) {
 }
 
 // ---------- Game Over Screen ----------
-function GameOverScreen({ score, missions, bestScore, onRetry, onHome, onLeaderboard }: any) {
+function GameOverScreen({ score, missions, bestScore, coins, dailyMode, onRetry, onHome, onLeaderboard }: any) {
   return (
     <SafeAreaView style={[styles.fullScreen, { backgroundColor: C.grass }]} testID="gameover-screen">
       <View style={styles.gameOverWrap}>
-        <Text style={styles.gameOverTitle}>Run Complete!</Text>
+        <Text style={styles.gameOverTitle}>{dailyMode ? 'Daily Run!' : 'Run Complete!'}</Text>
         <View style={styles.gameOverCard}>
           <View style={styles.gameOverRow}>
             <FontAwesome5 name="star" size={20} color={C.primaryDark} />
@@ -437,6 +549,11 @@ function GameOverScreen({ score, missions, bestScore, onRetry, onHome, onLeaderb
             <FontAwesome5 name="flag-checkered" size={18} color={C.accent} />
             <Text style={styles.gameOverLabel}>Missions</Text>
             <Text style={styles.gameOverValue} testID="gameover-missions">{missions}</Text>
+          </View>
+          <View style={styles.gameOverRow}>
+            <FontAwesome5 name="coins" size={18} color={C.primaryDark} />
+            <Text style={styles.gameOverLabel}>Coins</Text>
+            <Text style={styles.gameOverValue}>{coins}</Text>
           </View>
           <View style={styles.gameOverRow}>
             <FontAwesome5 name="crown" size={18} color={C.danger} />
@@ -458,30 +575,191 @@ function GameOverScreen({ score, missions, bestScore, onRetry, onHome, onLeaderb
   );
 }
 
+// ---------- Vehicle Select Screen ----------
+function VehicleSelectScreen({ coins, unlocks, selected, onSelect, onPurchase, dailyMode, onStart, onShop, onBack }: any) {
+  const types: VehicleType[] = ['car', 'bike', 'cycle', 'ambulance', 'police', 'tractor'];
+  const [busy, setBusy] = useState<string>('');
+  const isLocked = (t: VehicleType) => VEHICLE_PRICES[t] !== undefined && !unlocks.includes(`vehicle:${t}`);
+  return (
+    <SafeAreaView style={[styles.fullScreen, { backgroundColor: C.grass }]} testID="vehicle-select-screen">
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+        <Text style={[styles.gameOverTitle, { fontSize: 28, marginTop: 8, textAlign: 'center' }]}>Choose Your Ride</Text>
+        {dailyMode && <Text style={{ textAlign: 'center', color: C.danger, fontWeight: '900', marginBottom: 8 }}>DAILY CHALLENGE</Text>}
+        <View style={[styles.homeBestPill, { alignSelf: 'center', backgroundColor: '#FEF3C7', marginBottom: 12 }]}>
+          <FontAwesome5 name="coins" size={14} color={C.primaryDark} />
+          <Text style={styles.homeBestText}>  {coins}</Text>
+        </View>
+        {types.map(t => {
+          const def = VEHICLE_DEFS[t];
+          const locked = isLocked(t);
+          const price = VEHICLE_PRICES[t];
+          const isSelected = selected === t;
+          return (
+            <TouchableOpacity
+              key={t}
+              testID={`vehicle-${t}`}
+              activeOpacity={0.85}
+              disabled={locked}
+              onPress={() => { if (!locked) { SFX.uiTap(); onSelect(t); } }}
+              style={{
+                backgroundColor: '#fff',
+                borderRadius: 16,
+                padding: 14,
+                marginBottom: 10,
+                borderWidth: 3,
+                borderColor: isSelected ? C.accent : C.textPrimary,
+                opacity: locked ? 0.6 : 1,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 12,
+              }}
+            >
+              <View style={{ width: 56, height: 38, backgroundColor: def.color, borderRadius: 8, borderWidth: 2, borderColor: '#073B4C', justifyContent: 'center', alignItems: 'center' }}>
+                <MaterialCommunityIcons name={iconForVehicle(t)} size={22} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 18, fontWeight: '900', color: C.textPrimary }}>{def.label}</Text>
+                <Text style={{ fontSize: 12, color: C.secondary }}>Top speed: {Math.floor(def.maxSpeed * 10)}</Text>
+              </View>
+              {locked ? (
+                <TouchableOpacity
+                  testID={`buy-${t}`}
+                  style={{ backgroundColor: coins >= price ? C.primary : '#E5E7EB', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderBottomWidth: 4, borderColor: coins >= price ? C.primaryDark : '#9CA3AF' }}
+                  disabled={coins < price || busy === t}
+                  onPress={async () => {
+                    setBusy(t);
+                    const ok = await onPurchase(t);
+                    setBusy('');
+                    if (ok) onSelect(t);
+                  }}
+                >
+                  <Text style={{ fontWeight: '900', color: C.textPrimary }}>{busy === t ? '...' : `Buy ${price}`}</Text>
+                </TouchableOpacity>
+              ) : isSelected ? (
+                <FontAwesome5 name="check-circle" size={26} color={C.accent} />
+              ) : (
+                <FontAwesome5 name="circle" size={20} color="#94a3b8" />
+              )}
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+      <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: 12, backgroundColor: 'rgba(255,255,255,0.95)', borderTopWidth: 2, borderColor: C.textPrimary, flexDirection: 'row', gap: 8 }}>
+        <TouchableOpacity testID="vsel-back" style={[styles.gameBtnSecondary, { backgroundColor: '#9CA3AF', borderColor: '#6B7280', minWidth: 0, flex: 1 }]} onPress={onBack}>
+          <Text style={styles.gameBtnSecondaryText}>BACK</Text>
+        </TouchableOpacity>
+        <TouchableOpacity testID="vsel-shop" style={[styles.gameBtnSecondary, { backgroundColor: C.accent, borderColor: '#048D6B', minWidth: 0, flex: 1 }]} onPress={onShop}>
+          <Text style={styles.gameBtnSecondaryText}>SHOP</Text>
+        </TouchableOpacity>
+        <TouchableOpacity testID="vsel-start" style={[styles.gameBtnPrimary, { minWidth: 0, flex: 2 }]} onPress={onStart}>
+          <Text style={styles.gameBtnPrimaryText}>START</Text>
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+// ---------- Coin Shop Screen ----------
+function ShopScreen({ coins, playerId, onBack }: any) {
+  const [packs, setPacks] = useState<any[]>([]);
+  const [busy, setBusy] = useState<string>('');
+  useEffect(() => {
+    fetch(`${BACKEND}/api/coin-packs`).then(r => r.json()).then(d => setPacks(d || [])).catch(() => {});
+  }, []);
+  const buy = async (id: string) => {
+    setBusy(id);
+    try {
+      const origin = (typeof window !== 'undefined' && window.location) ? window.location.origin : (BACKEND as string);
+      const r = await fetch(`${BACKEND}/api/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ package_id: id, origin_url: origin, player_id: playerId }),
+      });
+      const d = await r.json();
+      if (d.url) {
+        if (typeof window !== 'undefined' && window.location) {
+          window.location.href = d.url;
+        } else {
+          await Linking.openURL(d.url);
+        }
+      }
+    } catch (_e) {}
+    setBusy('');
+  };
+  return (
+    <SafeAreaView style={[styles.fullScreen, { backgroundColor: C.grass }]} testID="shop-screen">
+      <View style={styles.lbHeader}>
+        <Text style={styles.lbTitle}>Coin Shop</Text>
+        <View style={[styles.homeBestPill, { backgroundColor: '#FEF3C7', marginTop: 8 }]}>
+          <FontAwesome5 name="coins" size={14} color={C.primaryDark} />
+          <Text style={styles.homeBestText}>  Balance: {coins}</Text>
+        </View>
+      </View>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 80 }}>
+        {packs.length === 0 ? (
+          <ActivityIndicator size="large" color={C.secondary} style={{ marginTop: 40 }} />
+        ) : packs.map((p: any) => (
+          <View key={p.id} style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 3, borderColor: C.textPrimary, flexDirection: 'row', alignItems: 'center', gap: 12 }} testID={`pack-${p.id}`}>
+            <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#FEF3C7', justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: C.primaryDark }}>
+              <FontAwesome5 name="coins" size={24} color={C.primaryDark} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 18, fontWeight: '900', color: C.textPrimary }}>{p.label}</Text>
+              <Text style={{ fontSize: 14, color: C.secondary, fontWeight: '700' }}>{p.coins.toLocaleString()} coins</Text>
+            </View>
+            <TouchableOpacity
+              testID={`buy-pack-${p.id}`}
+              style={{ backgroundColor: C.primary, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, borderBottomWidth: 4, borderColor: C.primaryDark }}
+              disabled={busy === p.id}
+              onPress={() => buy(p.id)}
+            >
+              <Text style={{ fontWeight: '900', color: C.textPrimary }}>{busy === p.id ? '...' : `$${p.amount}`}</Text>
+            </TouchableOpacity>
+          </View>
+        ))}
+        <Text style={{ textAlign: 'center', color: C.textPrimary, fontSize: 12, opacity: 0.7, marginTop: 12 }}>Test mode — payments are simulated.</Text>
+      </ScrollView>
+      <View style={styles.lbFooter}>
+        <TouchableOpacity testID="shop-back" style={styles.gameBtnPrimary} onPress={onBack}>
+          <Text style={styles.gameBtnPrimaryText}>BACK</Text>
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
+  );
+}
+
 // ---------- Leaderboard ----------
 function LeaderboardScreen({ onBack }: any) {
+  const [tab, setTab] = useState<'global' | 'daily'>('global');
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    fetch(`${BACKEND}/api/scores/leaderboard`)
+    setLoading(true);
+    const url = tab === 'daily' ? `${BACKEND}/api/daily/leaderboard` : `${BACKEND}/api/scores/leaderboard`;
+    fetch(url)
       .then(r => r.json())
-      .then(d => {
-        setItems(d || []);
-        setLoading(false);
-      })
+      .then(d => { setItems(d || []); setLoading(false); })
       .catch(() => setLoading(false));
-  }, []);
+  }, [tab]);
   return (
     <SafeAreaView style={[styles.fullScreen, { backgroundColor: C.grass }]} testID="leaderboard-screen">
       <View style={styles.lbHeader}>
         <Text style={styles.lbTitle}>Leaderboard</Text>
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+          <TouchableOpacity testID="lb-tab-global" onPress={() => { SFX.uiTap(); setTab('global'); }} style={{ paddingHorizontal: 18, paddingVertical: 8, borderRadius: 16, backgroundColor: tab === 'global' ? C.primary : 'rgba(255,255,255,0.6)', borderWidth: 2, borderColor: C.textPrimary }}>
+            <Text style={{ fontWeight: '900', color: C.textPrimary }}>Global</Text>
+          </TouchableOpacity>
+          <TouchableOpacity testID="lb-tab-daily" onPress={() => { SFX.uiTap(); setTab('daily'); }} style={{ paddingHorizontal: 18, paddingVertical: 8, borderRadius: 16, backgroundColor: tab === 'daily' ? C.danger : 'rgba(255,255,255,0.6)', borderWidth: 2, borderColor: C.textPrimary }}>
+            <Text style={{ fontWeight: '900', color: tab === 'daily' ? '#fff' : C.textPrimary }}>Today</Text>
+          </TouchableOpacity>
+        </View>
       </View>
       {loading ? (
         <ActivityIndicator size="large" color={C.secondary} style={{ marginTop: 40 }} />
       ) : (
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 80 }}>
           {items.length === 0 ? (
-            <Text style={styles.lbEmpty} testID="lb-empty">No scores yet. Be the first!</Text>
+            <Text style={styles.lbEmpty} testID="lb-empty">{tab === 'daily' ? 'No scores yet today. Be the first!' : 'No scores yet. Be the first!'}</Text>
           ) : (
             items.map((it, idx) => (
               <View key={it.id || idx} style={styles.lbRow} testID={`lb-row-${idx}`}>
@@ -503,7 +781,7 @@ function LeaderboardScreen({ onBack }: any) {
 }
 
 // ---------- The Game ----------
-function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score: number, missions: number) => void }) {
+function GameScreen({ playerName, initialVehicle, dailyMode, onExit }: { playerName: string; initialVehicle: VehicleType; dailyMode: boolean; onExit: (score: number, missions: number, coinsEarned: number, vehicle: string) => void }) {
   const [dim, setDim] = useState(Dimensions.get('window'));
   useEffect(() => {
     const sub = Dimensions.addEventListener('change', ({ window }) => setDim(window));
@@ -512,7 +790,7 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
   const SCREEN_W = dim.width;
   const SCREEN_H = dim.height;
 
-  // game state in refs (so loop reads latest without re-renders)
+  // Boot the player into their selected vehicle right away
   const playerRef = useRef({
     x: 250,
     y: 240,
@@ -525,6 +803,33 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
   const npcsRef = useRef<Npc[]>(initialNpcs());
   const inputRef = useRef({ dx: 0, dy: 0, boost: false });
   const missionRef = useRef<Mission | null>(null);
+  const coinsEarnedRef = useRef<number>(0);
+  const lastVehicleRef = useRef<string>(initialVehicle || 'car');
+
+  // Place initial selected vehicle near the player and seat them in it
+  useEffect(() => {
+    if (!initialVehicle) return;
+    const def = VEHICLE_DEFS[initialVehicle];
+    const newVeh: Vehicle = {
+      id: 'starter',
+      type: initialVehicle,
+      x: playerRef.current.x + 30,
+      y: playerRef.current.y + 30,
+      angle: 0,
+      speed: 0,
+      maxSpeed: def.maxSpeed,
+      color: def.color,
+      width: def.w,
+      length: def.l,
+      label: def.label,
+    };
+    vehiclesRef.current = [newVeh, ...vehiclesRef.current];
+    playerRef.current.x = newVeh.x;
+    playerRef.current.y = newVeh.y;
+    playerRef.current.onFoot = false;
+    playerRef.current.vehicleId = newVeh.id;
+    lastVehicleRef.current = initialVehicle;
+  }, [initialVehicle]);
 
   const [scoreState, setScoreState] = useState(0);
   const [missionsState, setMissionsState] = useState(0);
@@ -765,8 +1070,11 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
             if (dxx * dxx + dyy * dyy < reach * reach) {
               scoreRef.current += m.reward;
               missionsCountRef.current += 1;
+              coinsEarnedRef.current += 10;
               setMissionsState(missionsCountRef.current);
-              showToast(`Mission complete! +${m.reward}`);
+              showToast(`Mission complete! +${m.reward} pts +10 coins`);
+              SFX.missionDone();
+              SFX.coin();
               missionRef.current = generateMission();
             }
           }
@@ -803,7 +1111,7 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
     }
 
     if (healthRef.current <= 0) {
-      onExit(Math.floor(scoreRef.current), missionsCountRef.current);
+      onExit(Math.floor(scoreRef.current), missionsCountRef.current, coinsEarnedRef.current, lastVehicleRef.current);
     }
   };
 
@@ -826,6 +1134,8 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
       if (closest) {
         p.onFoot = false;
         p.vehicleId = closest.id;
+        lastVehicleRef.current = closest.type;
+        SFX.enter();
         showToast(`Boarded ${closest.label}`);
       } else {
         showToast('No vehicle nearby');
@@ -847,6 +1157,7 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
 
   const onHorn = () => {
     setHornActive(true);
+    SFX.horn();
     setTimeout(() => setHornActive(false), 400);
     // scare NPCs
     const p = playerRef.current;
@@ -1130,7 +1441,7 @@ function GameScreen({ playerName, onExit }: { playerName: string; onExit: (score
             <TouchableOpacity
               testID="pause-quit"
               style={[styles.gameBtnSecondary, { backgroundColor: C.danger, borderColor: C.dangerDark }]}
-              onPress={() => onExit(Math.floor(scoreRef.current), missionsCountRef.current)}
+              onPress={() => onExit(Math.floor(scoreRef.current), missionsCountRef.current, coinsEarnedRef.current, lastVehicleRef.current)}
             >
               <Text style={styles.gameBtnSecondaryText}>END RUN</Text>
             </TouchableOpacity>
