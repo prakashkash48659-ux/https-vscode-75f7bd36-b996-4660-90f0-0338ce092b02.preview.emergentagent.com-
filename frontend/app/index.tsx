@@ -17,6 +17,7 @@ import {
 import { MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { Canvas, useFrame, useThree } from '@react-three/fiber/native';
 import * as THREE from 'three';
+import { useAudioRecorder, AudioModule, RecordingPresets } from 'expo-audio';
 
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
 const ORIGIN = typeof window !== 'undefined' && window.location ? window.location.origin : (BACKEND as string);
@@ -557,68 +558,118 @@ function GameOverScreen({ score, missions, bestScore, coins, dailyMode, onSubmit
   const [error, setError] = useState<string>('');
   const recorderRef = useRef<any>(null);
   const chunksRef = useRef<any[]>([]);
+  const nativeRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const nativeStopTimerRef = useRef<any>(null);
+  const isWeb = Platform.OS === 'web';
+
+  const transcribeB64 = async (b64: string, mime: string) => {
+    try {
+      const r = await fetch(`${BACKEND}/api/whisper`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio_b64: b64, mime }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        setVoiceText(d.text || '');
+      }
+    } catch (_e) {}
+  };
 
   const startRec = async () => {
     setError('');
-    try {
-      if (typeof navigator === 'undefined' || !navigator.mediaDevices) {
-        setError('Voice not supported on this device');
-        return;
+    if (isWeb) {
+      try {
+        if (typeof navigator === 'undefined' || !navigator.mediaDevices) {
+          setError('Voice not supported on this device');
+          return;
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const W: any = (typeof window !== 'undefined') ? window : {};
+        const MR = W.MediaRecorder;
+        if (!MR) { setError('Recording not supported'); return; }
+        let mime = 'audio/webm;codecs=opus';
+        if (!MR.isTypeSupported(mime)) mime = 'audio/webm';
+        if (!MR.isTypeSupported(mime)) mime = '';
+        const rec = new MR(stream, mime ? { mimeType: mime } : undefined);
+        chunksRef.current = [];
+        rec.ondataavailable = (e: any) => { if (e.data && e.data.size) chunksRef.current.push(e.data); };
+        rec.onstop = async () => {
+          const blob = new Blob(chunksRef.current, { type: mime || 'audio/webm' });
+          setVoiceMime(blob.type || 'audio/webm');
+          const buf = await blob.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+          let bin = '';
+          for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+          const b64 = (typeof btoa !== 'undefined') ? btoa(bin) : '';
+          setVoiceB64(b64);
+          setRecState('transcribing');
+          await transcribeB64(b64, blob.type || 'audio/webm');
+          setRecState('recorded');
+          try { stream.getTracks().forEach((t: any) => t.stop()); } catch (_e) {}
+        };
+        recorderRef.current = rec;
+        rec.start();
+        setRecState('recording');
+        setTimeout(() => { try { rec.state === 'recording' && rec.stop(); } catch (_e) {} }, 6000);
+      } catch (e: any) {
+        setError(e?.message || 'Mic permission denied');
       }
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const W: any = (typeof window !== 'undefined') ? window : {};
-      const MR = W.MediaRecorder;
-      if (!MR) { setError('Recording not supported'); return; }
-      let mime = 'audio/webm;codecs=opus';
-      if (!MR.isTypeSupported(mime)) mime = 'audio/webm';
-      if (!MR.isTypeSupported(mime)) mime = '';
-      const rec = new MR(stream, mime ? { mimeType: mime } : undefined);
-      chunksRef.current = [];
-      rec.ondataavailable = (e: any) => { if (e.data && e.data.size) chunksRef.current.push(e.data); };
-      rec.onstop = async () => {
-        const blob = new Blob(chunksRef.current, { type: mime || 'audio/webm' });
-        setVoiceMime(blob.type || 'audio/webm');
-        const buf = await blob.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-        let bin = '';
-        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-        const b64 = (typeof btoa !== 'undefined') ? btoa(bin) : '';
-        setVoiceB64(b64);
-        setRecState('transcribing');
-        try {
-          const r = await fetch(`${BACKEND}/api/whisper`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ audio_b64: b64, mime: blob.type || 'audio/webm' }),
-          });
-          if (r.ok) {
-            const d = await r.json();
-            setVoiceText(d.text || '');
-          }
-        } catch (_e) {}
-        setRecState('recorded');
-        try { stream.getTracks().forEach((t: any) => t.stop()); } catch (_e) {}
-      };
-      recorderRef.current = rec;
-      rec.start();
+      return;
+    }
+    // NATIVE path via expo-audio
+    try {
+      const perm = await AudioModule.requestRecordingPermissionsAsync();
+      if (!perm?.granted) { setError('Microphone permission denied'); return; }
+      await nativeRecorder.prepareToRecordAsync();
+      nativeRecorder.record();
       setRecState('recording');
-      // auto stop after 6s
-      setTimeout(() => { try { rec.state === 'recording' && rec.stop(); } catch (_e) {} }, 6000);
+      nativeStopTimerRef.current = setTimeout(() => { stopRec(); }, 6000);
     } catch (e: any) {
-      setError(e?.message || 'Mic permission denied');
+      setError(e?.message || 'Native recording failed');
     }
   };
 
-  const stopRec = () => {
-    try { recorderRef.current && recorderRef.current.state === 'recording' && recorderRef.current.stop(); } catch (_e) {}
+  const stopRec = async () => {
+    if (isWeb) {
+      try { recorderRef.current && recorderRef.current.state === 'recording' && recorderRef.current.stop(); } catch (_e) {}
+      return;
+    }
+    try {
+      if (nativeStopTimerRef.current) { clearTimeout(nativeStopTimerRef.current); nativeStopTimerRef.current = null; }
+      await nativeRecorder.stop();
+      const uri = nativeRecorder.uri;
+      if (!uri) { setError('No audio captured'); setRecState('idle'); return; }
+      setRecState('transcribing');
+      const res = await fetch(uri);
+      const blob = await res.blob();
+      const buf = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)) as any);
+      }
+      const b64 = (typeof btoa !== 'undefined') ? btoa(bin) : '';
+      const mime = blob.type || 'audio/m4a';
+      setVoiceMime(mime);
+      setVoiceB64(b64);
+      await transcribeB64(b64, mime);
+      setRecState('recorded');
+    } catch (e: any) {
+      setError(e?.message || 'Stop recording failed');
+      setRecState('idle');
+    }
   };
 
   const playPreview = () => {
     if (!voiceB64) return;
-    if (typeof window !== 'undefined' && (window as any).Audio) {
+    if (isWeb && typeof window !== 'undefined' && (window as any).Audio) {
       const a = new (window as any).Audio(`data:${voiceMime};base64,${voiceB64}`);
       a.play().catch(() => {});
+      return;
     }
+    // Native preview: for MVP, we just rely on user's memory. Full playback would use createAudioPlayer.
   };
 
   const submit = async (withVoice: boolean) => {
