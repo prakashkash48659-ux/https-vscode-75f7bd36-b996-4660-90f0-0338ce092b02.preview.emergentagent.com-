@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -38,6 +38,38 @@ COIN_PACKS: Dict[str, Dict[str, Any]] = {
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+
+# ---------- Multiplayer Connection Manager ----------
+class WorldConnectionManager:
+    def __init__(self):
+        self.active: Dict[WebSocket, Dict[str, Any]] = {}
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active[ws] = {}
+
+    def disconnect(self, ws: WebSocket):
+        self.active.pop(ws, None)
+
+    def players(self):
+        return [p for p in self.active.values() if p.get("player_id")]
+
+    async def broadcast(self, msg: Dict[str, Any]):
+        dead = []
+        for ws in list(self.active.keys()):
+            try:
+                await ws.send_json(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.active.pop(ws, None)
+
+    async def broadcast_state(self):
+        await self.broadcast({"type": "players", "list": self.players()})
+
+
+world_mgr = WorldConnectionManager()
 
 
 # ---------- Models ----------
@@ -439,6 +471,62 @@ async def whisper(payload: WhisperRequest):
 
 
 app.include_router(api_router)
+
+
+# ---------- Multiplayer WebSocket ----------
+import asyncio
+
+
+@app.websocket("/api/ws/world")
+async def world_ws(websocket: WebSocket):
+    await world_mgr.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            t = data.get("type")
+            if t == "pos":
+                world_mgr.active[websocket] = {
+                    "player_id": str(data.get("player_id", ""))[:64] or "anon",
+                    "name": str(data.get("name", "Anon"))[:24],
+                    "x": float(data.get("x", 0)),
+                    "y": float(data.get("y", 0)),
+                    "angle": float(data.get("angle", 0)),
+                    "vehicle": str(data.get("vehicle", "car"))[:16],
+                    "on_foot": bool(data.get("on_foot", False)),
+                }
+            elif t == "chat":
+                text = str(data.get("text", ""))[:140].strip()
+                if text:
+                    await world_mgr.broadcast({
+                        "type": "chat",
+                        "name": str(data.get("name", "Anon"))[:24],
+                        "text": text,
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                    })
+            elif t == "ping":
+                try:
+                    await websocket.send_json({"type": "pong"})
+                except Exception:
+                    break
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        world_mgr.disconnect(websocket)
+
+
+@app.on_event("startup")
+async def start_broadcaster():
+    async def loop():
+        while True:
+            try:
+                if world_mgr.active:
+                    await world_mgr.broadcast_state()
+            except Exception:
+                pass
+            await asyncio.sleep(0.2)
+    asyncio.create_task(loop())
 
 app.add_middleware(
     CORSMiddleware,

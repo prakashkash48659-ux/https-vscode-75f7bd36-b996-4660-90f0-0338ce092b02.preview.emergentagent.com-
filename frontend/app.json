@@ -34,7 +34,9 @@
           "backgroundColor": "#000"
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-asset",
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true

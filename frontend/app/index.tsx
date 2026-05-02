@@ -1012,6 +1012,89 @@ function GameScreen({ playerName, initialVehicle, dailyMode, onExit }: { playerN
   const timeAccumRef = useRef(0);
   const audioElRef = useRef<any>(null);
 
+  // ---------- Multiplayer state ----------
+  const wsRef = useRef<any>(null);
+  const otherPlayersRef = useRef<any[]>([]);
+  const [onlineCount, setOnlineCount] = useState<number>(0);
+  const [chatMsgs, setChatMsgs] = useState<{ name: string; text: string; ts: string }[]>([]);
+  const [chatOpen, setChatOpen] = useState<boolean>(false);
+  const [chatInput, setChatInput] = useState<string>('');
+
+  // open WS
+  useEffect(() => {
+    if (typeof window === 'undefined' || !BACKEND) return;
+    let url = BACKEND.replace(/^http/i, 'ws').replace(/\/+$/, '') + '/api/ws/world';
+    let alive = true;
+    let reconnectTimer: any = null;
+    const open = () => {
+      try {
+        const W: any = window;
+        const ws = new W.WebSocket(url);
+        wsRef.current = ws;
+        ws.onmessage = (ev: any) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === 'players') {
+              const me = getPlayerId();
+              const others = (msg.list || []).filter((p: any) => p.player_id !== me);
+              otherPlayersRef.current = others;
+              setOnlineCount(others.length);
+            } else if (msg.type === 'chat') {
+              setChatMsgs(prev => {
+                const next = [...prev, msg];
+                return next.slice(-30);
+              });
+            }
+          } catch (_e) {}
+        };
+        ws.onclose = () => {
+          if (alive) reconnectTimer = setTimeout(open, 2000);
+        };
+        ws.onerror = () => { try { ws.close(); } catch (_e) {} };
+      } catch (_e) {
+        if (alive) reconnectTimer = setTimeout(open, 2000);
+      }
+    };
+    open();
+    return () => {
+      alive = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { wsRef.current && wsRef.current.close(); } catch (_e) {}
+    };
+  }, []);
+
+  // send position every 250ms
+  useEffect(() => {
+    const id = setInterval(() => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== 1) return;
+      const p = playerRef.current;
+      const veh = vehiclesRef.current.find(v => v.id === p.vehicleId);
+      try {
+        ws.send(JSON.stringify({
+          type: 'pos',
+          player_id: getPlayerId(),
+          name: playerName || 'Anon',
+          x: p.x, y: p.y, angle: p.angle,
+          vehicle: veh ? veh.type : 'car',
+          on_foot: p.onFoot,
+        }));
+      } catch (_e) {}
+    }, 250);
+    return () => clearInterval(id);
+  }, [playerName]);
+
+  const sendChat = useCallback(() => {
+    const ws = wsRef.current;
+    const text = chatInput.trim();
+    if (!text || !ws || ws.readyState !== 1) return;
+    try {
+      ws.send(JSON.stringify({ type: 'chat', name: playerName || 'Anon', text }));
+    } catch (_e) {}
+    setChatInput('');
+    SFX.uiTap();
+  }, [chatInput, playerName]);
+
   // initial mission
   useEffect(() => {
     missionRef.current = generateMission();
@@ -1472,6 +1555,21 @@ function GameScreen({ playerName, initialVehicle, dailyMode, onExit }: { playerN
             </View>
           )}
 
+          {/* Other players (ghost cars / pedestrians) */}
+          {otherPlayersRef.current.map((op, idx) => {
+            const def = VEHICLE_DEFS[(op.vehicle as VehicleType) || 'car'] || VEHICLE_DEFS.car;
+            return (
+              <View key={`op-${op.player_id || idx}`} style={{ position: 'absolute', left: op.x, top: op.y, opacity: 0.65 }}>
+                <View style={{ position: 'absolute', left: -def.l / 2, top: -def.w / 2, width: def.l, height: def.w, transform: [{ rotate: `${op.angle}rad` }] }}>
+                  <View style={{ flex: 1, backgroundColor: def.color, borderRadius: 8, borderWidth: 2, borderColor: '#fff' }} />
+                </View>
+                <View style={{ position: 'absolute', left: -36, top: -28, backgroundColor: 'rgba(11,59,76,0.85)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8 }}>
+                  <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }} numberOfLines={1}>{op.name || 'Player'}</Text>
+                </View>
+              </View>
+            );
+          })}
+
           {/* horn ripple */}
           {hornActive && (
             <View style={{ position: 'absolute', left: playerRef.current.x - 80, top: playerRef.current.y - 80, width: 160, height: 160, borderRadius: 80, borderWidth: 4, borderColor: C.primary, opacity: 0.6 }} />
@@ -1525,6 +1623,10 @@ function GameScreen({ playerName, initialVehicle, dailyMode, onExit }: { playerN
           )}
           <TouchableOpacity testID="pause-button" style={[styles.hudPill, { backgroundColor: C.danger }]} onPress={() => setPaused(true)}>
             <FontAwesome5 name="pause" size={12} color="#fff" />
+          </TouchableOpacity>
+          <TouchableOpacity testID="hud-online" style={[styles.hudPill, { backgroundColor: '#06D6A0' }]} onPress={() => { SFX.uiTap(); setChatOpen(o => !o); }}>
+            <FontAwesome5 name="users" size={12} color="#fff" />
+            <Text style={[styles.hudPillText, { color: '#fff' }]}>  {onlineCount}</Text>
           </TouchableOpacity>
         </View>
 
@@ -1925,4 +2027,11 @@ const styles = StyleSheet.create({
   tauntTitle: { fontSize: 16, fontWeight: '900', color: C.textPrimary, marginBottom: 2 },
   tauntSub: { fontSize: 12, color: C.textPrimary, opacity: 0.7, marginBottom: 8 },
   tauntText: { fontSize: 14, fontStyle: 'italic', color: C.textPrimary, textAlign: 'center', marginVertical: 6 },
+
+  chatPanel: { position: 'absolute', left: 12, right: 12, bottom: 200, backgroundColor: 'rgba(255,255,255,0.97)', borderRadius: 16, borderWidth: 2, borderColor: C.textPrimary, overflow: 'hidden' },
+  chatHeader: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#06D6A0', paddingHorizontal: 12, paddingVertical: 8 },
+  chatHeaderText: { flex: 1, fontWeight: '900', color: C.textPrimary, fontSize: 13 },
+  chatInputRow: { flexDirection: 'row', padding: 8, gap: 8, borderTopWidth: 1, borderColor: '#E5E7EB' },
+  chatInput: { flex: 1, backgroundColor: '#F3F4F6', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, fontSize: 13 },
+  chatSendBtn: { backgroundColor: C.secondary, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, justifyContent: 'center' },
 });
